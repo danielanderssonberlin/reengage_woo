@@ -34,6 +34,7 @@ class Reengage_Woo {
         add_action('admin_post_reengage_refresh', [ $this, 'handle_refresh' ]);
         add_action('admin_post_reengage_delete', [ $this, 'handle_delete' ]);
         add_action('admin_post_reengage_delete_row', [ $this, 'handle_delete_row' ]);
+        add_action('admin_post_reengage_generate_coupons', [ $this, 'handle_generate_coupons' ]); 
     }
 
     public function handle_refresh() {
@@ -82,6 +83,67 @@ class Reengage_Woo {
         wp_safe_redirect( admin_url( 'tools.php?page=reengage-woo&row_deleted=' . ( $deleted ? 1 : 0 ) ) );
         exit;
     }
+
+    public function handle_generate_coupons() {
+        if ( ! current_user_can('manage_options') ) {
+            wp_die('Keine Berechtigung');
+        }
+
+        check_admin_referer('reengage_generate_coupons');
+
+        global $wpdb;
+        $three_months_ago = date('Y-m-d H:i:s', strtotime('-3 months'));
+
+        // Inaktive Kunden holen
+        $inactive_customers = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT first_name, last_name, email, last_order_date
+                FROM " . self::$table_name . "
+                WHERE (last_order_date IS NULL 
+                OR last_order_date = '0000-00-00 00:00:00' 
+                OR last_order_date < %s)",
+                $three_months_ago
+            )
+        );
+
+        $coupons = [];
+
+        foreach ($inactive_customers as $c) {
+            if (empty($c->email)) continue;
+
+            // Unique Code
+            $coupon_code = 'REENGAGE-' . strtoupper(substr(md5($c->email . time()), 0, 10));
+
+            // WooCommerce Coupon erstellen
+            $coupon = new WC_Coupon();
+            $coupon->set_code($coupon_code);
+            $coupon->set_discount_type('percent');
+            $coupon->set_amount(20);
+            $coupon->set_email_restrictions([$c->email]);
+            $coupon->set_usage_limit(1);
+            $coupon->set_date_expires(strtotime('+2 months'));
+            $coupon->save();
+
+            $coupons[] = [
+                'first_name'      => $c->first_name,
+                'last_name'       => $c->last_name,
+                'email'           => $c->email,
+                'last_order_date' => $c->last_order_date,
+                'voucher'         => $coupon_code,
+                
+            ];
+        }
+
+        // Array im Backend speichern
+        update_option('reengage_last_generated_coupons', $coupons);
+
+        // Redirect zurück zur Admin-Seite mit Erfolgsmeldung
+        wp_safe_redirect(admin_url('tools.php?page=reengage-woo&coupons_generated=' . count($coupons)));
+        exit;
+    }
+
+
+
 
 
     public function on_activation() {
@@ -287,6 +349,46 @@ class Reengage_Woo {
                 <button type="submit" class="button">Tabelle löschen</button>
             </form>
 
+            <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+                <?php wp_nonce_field('reengage_generate_coupons'); ?>
+                <input type="hidden" name="action" value="reengage_generate_coupons">
+                <button type="submit" class="button">Gutscheine generieren (20% / 2 Monate)</button>
+            </form>
+
+            <button id="sendTestmail">Testmail versenden</button>
+
+            <script>
+            jQuery(document).ready(function($){
+                $("#sendTestmail").on("click", function(){
+                    $.post(ajaxurl, { action: "reengage_get_last_generated_coupons" }, function(response){
+                        if(!response.success || !response.data.length){
+                            alert("Keine Gutscheine gefunden. Bitte zuerst generieren.");
+                            return;
+                        }
+
+                        var firstCustomer = response.data[8];
+                        if (!confirm("Soll die Testmail an " + firstCustomer.email + " gesendet werden?")) return;
+
+                        $.post(ajaxurl, {
+                            action: "send_testmail_to_customer",
+                            email: firstCustomer.email,
+                            first_name: firstCustomer.first_name,
+                            voucher: firstCustomer.voucher
+                        }, function(resp){
+                            if(resp.success){
+                                alert("Testmail gesendet an " + firstCustomer.email);
+                            } else {
+                                alert("Fehler beim Senden");
+                            }
+                        });
+                    });
+                });
+            });
+
+
+            </script>
+
+
             <table class="widefat fixed striped">
                 <thead>
                     <tr>
@@ -323,6 +425,8 @@ class Reengage_Woo {
         <?php
     }
 
+    
+
 
     public function handle_export_csv() {
         if (!current_user_can('manage_options')) {
@@ -351,5 +455,37 @@ class Reengage_Woo {
     }
 }
 
+add_action('wp_ajax_reengage_get_last_generated_coupons', function(){
+    if ( ! current_user_can('manage_options') ) wp_send_json_error('Keine Berechtigung');
+
+    $coupons = get_option('reengage_last_generated_coupons', []);
+    wp_send_json_success($coupons);
+});
+
+add_action('wp_ajax_send_testmail_to_customer', function() {
+    $email   = sanitize_email($_POST['email']);
+    $name    = sanitize_text_field($_POST['first_name']);
+    $voucher = sanitize_text_field($_POST['voucher']);
+
+    $anrede = $name ? "Lieber {$name}" : "Liebe Kundin, lieber Kunde";
+
+    $subject = "Dein persönlicher Gutschein von uns 🎁";
+    $message = "
+        <p>{$anrede},</p>
+        <p>wir haben bemerkt, dass du länger nicht bei uns bestellt hast. 
+        Deshalb möchten wir dich mit einem exklusiven Gutschein zurückholen:</p>
+        <p><strong>{$voucher}</strong></p>
+        <p>20% Rabatt auf deine nächste Bestellung.<br>
+        Gültig für 2 Monate.</p>
+        <p>Wir freuen uns auf dich!<br>
+        Dein Kenorecords Team</p>
+    ";
+
+    add_filter('wp_mail_content_type', function() { return "text/html"; });
+    $sent = wp_mail($email, $subject, $message);
+    remove_filter('wp_mail_content_type', 'set_html_content_type');
+
+    wp_send_json_success([ 'sent' => $sent ]);
+});
 
 Reengage_Woo::init();
