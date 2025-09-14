@@ -33,7 +33,7 @@ class Reengage_Woo {
         add_action('admin_post_reengage_export_csv', [ $this, 'handle_export_csv' ]);
         add_action('admin_post_reengage_refresh', [ $this, 'handle_refresh' ]);
         add_action('admin_post_reengage_delete', [ $this, 'handle_delete' ]);
-
+        add_action('admin_post_reengage_delete_row', [ $this, 'handle_delete_row' ]);
     }
 
     public function handle_refresh() {
@@ -58,6 +58,31 @@ class Reengage_Woo {
         wp_redirect(admin_url('tools.php?page=reengage-woo&deleted=1'));
         exit;
     }
+
+    public function handle_delete_row() {
+        if ( ! current_user_can( 'manage_options' ) ) {
+            wp_die( 'Keine Berechtigung' );
+        }
+
+        if ( ! isset( $_POST['id'] ) ) {
+            wp_die( 'Ungültige Anfrage (keine ID).' );
+        }
+
+        $id = intval( $_POST['id'] );
+
+        // Prüfe Nonce (per-row)
+        if ( ! isset( $_POST['_wpnonce'] ) || ! wp_verify_nonce( $_POST['_wpnonce'], 'reengage_delete_row_' . $id ) ) {
+            wp_die( 'Ungültige Anfrage (Nonce ungültig).' );
+        }
+
+        global $wpdb;
+        $deleted = $wpdb->delete( self::$table_name, [ 'id' => $id ], [ '%d' ] );
+
+        // besser wp_safe_redirect verwenden
+        wp_safe_redirect( admin_url( 'tools.php?page=reengage-woo&row_deleted=' . ( $deleted ? 1 : 0 ) ) );
+        exit;
+    }
+
 
     public function on_activation() {
         $this->create_table();
@@ -233,6 +258,10 @@ class Reengage_Woo {
                 </div>';
         }
 
+        if (isset($_GET['row_deleted']) && $_GET['row_deleted'] == 1) {
+            echo '<div class="notice notice-success is-dismissible"><p>Eintrag gelöscht.</p></div>';
+        }
+
         global $wpdb;
         $rows = $wpdb->get_results("SELECT * FROM " . self::$table_name . " ORDER BY COALESCE(last_order_date, '1970-01-01') ASC");
         ?>
@@ -261,27 +290,35 @@ class Reengage_Woo {
             <table class="widefat fixed striped">
                 <thead>
                     <tr>
-                        <th>User ID</th>
                         <th>Vorname</th>
                         <th>Nachname</th>
                         <th>E-Mail</th>
                         <th>Letzte Bestellung</th>
+                        <th>Aktionen</th> <!-- 🔹 neue Spalte -->
                     </tr>
                 </thead>
                 <tbody>
                 <?php if (!empty($rows)): foreach ($rows as $r): ?>
                     <tr>
-                        <td><?php echo esc_html($r->user_id); ?></td>
                         <td><?php echo esc_html($r->first_name); ?></td>
                         <td><?php echo esc_html($r->last_name); ?></td>
                         <td><?php echo esc_html($r->email); ?></td>
                         <td><?php echo esc_html($r->last_order_date); ?></td>
+                        <td>
+                            <form method="post" action="<?php echo esc_url( admin_url('admin-post.php') ); ?>" style="display:inline;">
+                                <?php wp_nonce_field( 'reengage_delete_row_' . intval( $r->id ) ); ?>
+                                <input type="hidden" name="action" value="reengage_delete_row">
+                                <input type="hidden" name="id" value="<?php echo intval( $r->id ); ?>">
+                                <button type="submit" class="button button-small" onclick="return confirm('Eintrag wirklich löschen?');">Löschen</button>
+                            </form>
+                        </td>
                     </tr>
                 <?php endforeach; else: ?>
-                    <tr><td colspan="5">Keine Einträge gefunden.</td></tr>
+                    <tr><td colspan="6">Keine Einträge gefunden.</td></tr>
                 <?php endif; ?>
                 </tbody>
             </table>
+
         </div>
         <?php
     }
