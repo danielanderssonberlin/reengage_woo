@@ -1,9 +1,8 @@
 <?php
 /**
  * Plugin Name: Reengage Woo
- * Plugin URI:  https://example.com/
- * Description: Erstellt nach Installation eine Tabelle mit allen WordPress-Usern, ihrer Email und Datum der letzten WooCommerce-Bestellung. Basis für Re-Engagement-Workflows (Coupons, Mails).
- * Version:     0.2.0
+ * Description: Tabelle mit allen Usern und Gästen die Bestellt haben. Letzte Bestellungsdatum. Gutscheine werden für Re-Engagement erstellt.
+ * Version:     0.5.0
  * Author:      Daniel Andersson
  * Text Domain: reengage-woo
  */
@@ -11,7 +10,6 @@
 if (!defined('ABSPATH')) {
     exit;
 }
-
 class Reengage_Woo
 {
     private static $table_name;
@@ -52,7 +50,7 @@ class Reengage_Woo
             ";
             update_option('reengage_email_template', $default_template);
         }
-        add_action('admin_init', function(){
+        add_action('admin_init', function () {
             register_setting('reengage_settings', 'reengage_email_template');
         });
 
@@ -70,7 +68,6 @@ class Reengage_Woo
         wp_redirect(admin_url('tools.php?page=reengage-woo&refreshed=1'));
         exit;
     }
-
     public function handle_delete()
     {
         if (!current_user_can('manage_options')) {
@@ -107,7 +104,6 @@ class Reengage_Woo
         wp_safe_redirect(admin_url('tools.php?page=reengage-woo&row_deleted=' . ($deleted ? 1 : 0)));
         exit;
     }
-
     public function handle_generate_coupons()
     {
         if (!current_user_can('manage_options')) {
@@ -174,7 +170,6 @@ class Reengage_Woo
                 'voucher' => $coupon_code,
             ];
         }
-
         // Array im Backend speichern
         update_option('reengage_last_generated_coupons', $coupons);
 
@@ -182,12 +177,6 @@ class Reengage_Woo
         wp_safe_redirect(admin_url('tools.php?page=reengage-woo&coupons_generated=' . count($coupons)));
         exit;
     }
-
-
-
-
-
-
     public function on_activation()
     {
         $this->create_table();
@@ -230,45 +219,36 @@ class Reengage_Woo
         require_once(ABSPATH . 'wp-admin/includes/upgrade.php');
         dbDelta($sql);
 
-        // Migration: drop unique index on email if it exists and ensure indexes
-        // 1) Drop UNIQUE(email) if present
         $uniqueEmail = $wpdb->get_var($wpdb->prepare("SHOW INDEX FROM " . self::$table_name . " WHERE Key_name = %s AND Non_unique = 0", 'email'));
         if ($uniqueEmail !== null) {
             $wpdb->query("ALTER TABLE " . self::$table_name . " DROP INDEX email");
         }
-        // 2) Ensure customer_key column exists (older installs)
         $col = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM " . self::$table_name . " LIKE %s", 'customer_key'));
         if ($col === null) {
             $wpdb->query("ALTER TABLE " . self::$table_name . " ADD COLUMN customer_key VARCHAR(191) NOT NULL AFTER id");
         }
-        // 3) Ensure UNIQUE(customer_key)
         $idx = $wpdb->get_var($wpdb->prepare("SHOW INDEX FROM " . self::$table_name . " WHERE Key_name = %s", 'customer_key'));
         if ($idx === null) {
             $wpdb->query("CREATE UNIQUE INDEX customer_key ON " . self::$table_name . " (customer_key)");
         }
-        // 4) Ensure non-unique index on email
         $idxEmail = $wpdb->get_var($wpdb->prepare("SHOW INDEX FROM " . self::$table_name . " WHERE Key_name = %s", 'email'));
         if ($idxEmail === null) {
             $wpdb->query("CREATE INDEX email ON " . self::$table_name . " (email)");
         }
     }
 
-
-
     private function populate_table()
     {
         if (!class_exists('WooCommerce')) {
             return;
         }
-
         global $wpdb;
-        // Clear table safely before re-populating
         $wpdb->query("TRUNCATE TABLE " . self::$table_name);
 
         $now = current_time('mysql');
         $emails_handled = [];
 
-        // 1️⃣ Alle abgeschlossenen WooCommerce-Bestellungen holen
+        // Alle abgeschlossenen WooCommerce-Bestellungen holen
         $all_orders = $wpdb->get_results("
             SELECT 
                 MAX(o.customer_id) AS customer_id,
@@ -300,8 +280,7 @@ class Reengage_Woo
             $emails_handled[] = strtolower($o->email);
         }
 
-        // 2️⃣ Registrierte WP-User ohne Bestellung
-        // Request minimal fields for performance; names fetched via user_meta
+        // Registrierte WP-User ohne Bestellung
         $users = get_users(['fields' => ['ID', 'user_email']]);
         foreach ($users as $u) {
             if (!in_array(strtolower($u->user_email), $emails_handled)) {
@@ -312,9 +291,6 @@ class Reengage_Woo
             }
         }
     }
-    /*
-     * Upsert Customer: unique by customer_key
-     */
     private function upsert_customer($customer_key, $user_id, $email, $last_order_date, $now, $first_name = '', $last_name = '')
     {
         global $wpdb;
@@ -350,14 +326,6 @@ class Reengage_Woo
             )
         );
     }
-
-
-
-
-
-
-
-
     public function admin_menu()
     {
         add_submenu_page(
@@ -454,17 +422,17 @@ class Reengage_Woo
                 <button id="sendTestmail" class="button">Testmail versenden</button>
             </div>
             <form method="post" action="options.php">
-                <?php 
+                <?php
                 settings_fields('reengage_settings');
                 do_settings_sections('reengage_settings');
                 ?>
                 <h2>HTML-Mailvorlage</h2>
-                <p>Hier kannst du die HTML-Mail bearbeiten, die an Kunden mit Gutschein gesendet wird. Verwende <code>{first_name}</code> für den Vornamen und <code>{voucher}</code> für den Gutscheincode.</p>
-                <textarea name="reengage_email_template" rows="15" style="width:100%;"><?php echo esc_textarea(get_option('reengage_email_template')); ?></textarea>
+                <p>Hier kannst du die HTML-Mail bearbeiten, die an Kunden mit Gutschein gesendet wird. Verwende
+                    <code>{first_name}</code> für den Vornamen und <code>{voucher}</code> für den Gutscheincode.</p>
+                <textarea name="reengage_email_template" rows="15"
+                    style="width:100%;"><?php echo esc_textarea(get_option('reengage_email_template')); ?></textarea>
                 <?php submit_button('Speichern'); ?>
             </form>
-
-            
 
             <script>
                 jQuery(document).ready(function ($) {
@@ -474,7 +442,6 @@ class Reengage_Woo
                                 alert("Keine Gutscheine gefunden. Bitte zuerst generieren.");
                                 return;
                             }
-
                             var firstCustomer = response.data[8];
                             if (!confirm("Soll die Testmail an " + firstCustomer.email + " gesendet werden?")) return;
 
@@ -523,7 +490,10 @@ add_action('wp_ajax_send_testmail_to_customer', function () {
         $template
     );
 
-    function set_html_content_type() { return 'text/html'; }
+    function set_html_content_type()
+    {
+        return 'text/html';
+    }
     add_filter('wp_mail_content_type', 'set_html_content_type');
     $sent = wp_mail($email, $subject, $message);
     remove_filter('wp_mail_content_type', 'set_html_content_type');
